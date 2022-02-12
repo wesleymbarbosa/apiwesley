@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\Session;
+use File;
 
 class AccountController extends Controller
 {
@@ -13,19 +14,34 @@ class AccountController extends Controller
 
     public function reset()
     {
-        Session::forget('account');
-        Session::flush();
-        Session::regenerate();
-
-        Session::flash('account', $this->account);
-
+        $this->saveJson($this->account);
         return response('OK', 200);
     }
 
+    private function saveJson($data)
+    {
+        if(is_array($data)){
+            $data = json_encode($data);
+        } else {
+            $data = json_encode($this->account);
+        }
+        
+        $jsongFile = 'accounts.json';
+        File::put(public_path($jsongFile), $data);
+    }
+
+    private function readJson()
+    {
+        $arquivo = 'accounts.json';
+        $content = file_get_contents(public_path($arquivo));
+        
+        return json_decode($content);
+    }
+        
     public function balance(Request $request)
     {
-        Session::reflash();
-        $session_account = Session::get('account');
+        $session_account = $this->readJson();
+
         if ($request->account_id === false) {
             return response()->json('Conta não informada', 400);
         }
@@ -37,24 +53,22 @@ class AccountController extends Controller
         if($account === false){
             return response()->json($this->initial, 404);
         } else {
-            return response()->json($session_account[$account]['balance'], 200);
+            return response()->json($session_account[$account]->balance, 200);
         }
     }
 
     private function existsAccount($account_id)
     {
-        Session::reflash();
-        $session_account = Session::get('account');
+        $this->account = $this->readJson();
 
-        if(!is_array($session_account) || count($session_account) <= 0){
+        if(!is_array($this->account) || count($this->account) <= 0){
             return false;
         }
-        return array_search($account_id, array_column($session_account, 'id'));
+        return array_search($account_id, array_column($this->account, 'id'));
     }
 
     public function event(Request $request)
     {
-        Session::reflash();
         if (!isset($request->type)) {
             return response()->json('Tipo não informado', 400);
         }
@@ -74,17 +88,19 @@ class AccountController extends Controller
             break;
             
             default:
-                $retorno = [];
+                $retorno = [
+                    'data' => $this->initial, 
+                    'code' => 404,
+                ];
             break;
         }
         
-        return response()->json($retorno, 201);
+        return response()->json($retorno['data'], $retorno['code']);
     }
 
     private function deposit($destination, $amount = 0)
     {
-        Session::reflash();
-        $session_account = Session::get('account');
+        $this->account = $this->readJson();
         $account = $this->existsAccount($destination);
         $retorno = [];
 
@@ -92,29 +108,52 @@ class AccountController extends Controller
             $deposito = ['id' => $destination, 'balance' => $amount];
             $this->account[] = $deposito;
 
-            $retorno = ['destination' => $deposito];            
+            $retorno = [
+                'data' => ['destination' => $deposito],
+                'code' => 201,
+            ];            
         } else {
-            $amount = $amount + $session_account[$account]['balance'];
+            $amount = $amount + $this->account[$account]->balance;
             
-            $session_account[$account]['balance'] = $amount;
-            $this->account = $session_account; 
+            $this->account[$account]->balance = $amount;
+            $this->account = $this->account; 
 
-            $retorno['destination'] = $session_account[$account];
+            $retorno = [
+                'data' => ['destination' => $this->account[$account]],
+                'code' => 201,
+            ];  
         }
-        
-        Session::flash('account', $this->account);
-        return Session::get('account');
+
+        $this->saveJson($this->account);
         return $retorno;
     }
 
     private function withdraw($origin, $amount = 0)
     {
-        Session::reflash();
-        $session_account = Session::get('account');
+        $this->account = $this->readJson();
         $account = $this->existsAccount($origin);
         $retorno = [];
 
+        if ($account === false) {
+            $retorno = [
+                'data' => $this->initial, 
+                'code' => 404,
+            ];
+        } else if($this->account[$account]->balance < $amount){
+            $retorno = [
+                'data' => $this->initial, 
+                'code' => 404,
+            ];
+        } else { 
+            $amount = $this->account[$account]->balance - $amount;
+            $this->account[$account]->balance = $amount;
+            $this->saveJson($this->account);
 
+            $retorno = [
+                'data' => ['origin' => $this->account[$account]],
+                'code' => 201,
+            ];
+        }
 
         return $retorno;
     }
