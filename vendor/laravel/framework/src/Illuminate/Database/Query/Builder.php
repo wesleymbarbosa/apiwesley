@@ -2,10 +2,12 @@
 
 namespace Illuminate\Database\Query;
 
+use BackedEnum;
 use Closure;
 use DateTimeInterface;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Database\Concerns\BuildsQueries;
+use Illuminate\Database\Concerns\ExplainsQueries;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -19,11 +21,12 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Traits\ForwardsCalls;
 use Illuminate\Support\Traits\Macroable;
 use InvalidArgumentException;
+use LogicException;
 use RuntimeException;
 
 class Builder
 {
-    use BuildsQueries, ForwardsCalls, Macroable {
+    use BuildsQueries, ExplainsQueries, ForwardsCalls, Macroable {
         __call as macroCall;
     }
 
@@ -180,6 +183,13 @@ class Builder
     public $lock;
 
     /**
+     * The callbacks that should be invoked before the query is executed.
+     *
+     * @var array
+     */
+    public $beforeQueryCallbacks = [];
+
+    /**
      * All of the available clause operators.
      *
      * @var string[]
@@ -187,14 +197,14 @@ class Builder
     public $operators = [
         '=', '<', '>', '<=', '>=', '<>', '!=', '<=>',
         'like', 'like binary', 'not like', 'ilike',
-        '&', '|', '^', '<<', '>>',
+        '&', '|', '^', '<<', '>>', '&~',
         'rlike', 'not rlike', 'regexp', 'not regexp',
         '~', '~*', '!~', '!~*', 'similar to',
         'not similar to', 'not ilike', '~~*', '!~~*',
     ];
 
     /**
-     * Whether use write pdo for select.
+     * Whether to use write pdo for the select.
      *
      * @var bool
      */
@@ -243,7 +253,7 @@ class Builder
     /**
      * Add a subselect expression to the query.
      *
-     * @param  \Closure|$this|string  $query
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder|string  $query
      * @param  string  $as
      * @return $this
      *
@@ -399,6 +409,7 @@ class Builder
     /**
      * Force the query to only return distinct results.
      *
+     * @param  mixed  ...$distinct
      * @return $this
      */
     public function distinct()
@@ -490,7 +501,7 @@ class Builder
     /**
      * Add a subquery join clause to the query.
      *
-     * @param  \Closure|\Illuminate\Database\Query\Builder|string  $query
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder|string  $query
      * @param  string  $as
      * @param  \Closure|string  $first
      * @param  string|null  $operator
@@ -543,7 +554,7 @@ class Builder
     /**
      * Add a subquery left join to the query.
      *
-     * @param  \Closure|\Illuminate\Database\Query\Builder|string  $query
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder|string  $query
      * @param  string  $as
      * @param  \Closure|string  $first
      * @param  string|null  $operator
@@ -586,7 +597,7 @@ class Builder
     /**
      * Add a subquery right join to the query.
      *
-     * @param  \Closure|\Illuminate\Database\Query\Builder|string  $query
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder|string  $query
      * @param  string  $as
      * @param  \Closure|string  $first
      * @param  string|null  $operator
@@ -751,7 +762,7 @@ class Builder
         );
 
         if (! $value instanceof Expression) {
-            $this->addBinding($value, 'where');
+            $this->addBinding($this->flattenValue($value), 'where');
         }
 
         return $this;
@@ -1085,7 +1096,7 @@ class Builder
     /**
      * Add an "or where null" clause to the query.
      *
-     * @param  string  $column
+     * @param  string|array  $column
      * @return $this
      */
     public function orWhereNull($column)
@@ -1120,7 +1131,7 @@ class Builder
 
         $this->wheres[] = compact('type', 'column', 'values', 'boolean', 'not');
 
-        $this->addBinding($this->cleanBindings($values), 'where');
+        $this->addBinding(array_slice($this->cleanBindings(Arr::flatten($values)), 0, 2), 'where');
 
         return $this;
     }
@@ -1231,7 +1242,7 @@ class Builder
     /**
      * Add a "where date" statement to the query.
      *
-     * @param  string  $column
+     * @param  \Illuminate\Database\Query\Expression|string  $column
      * @param  string  $operator
      * @param  \DateTimeInterface|string|null  $value
      * @param  string  $boolean
@@ -1242,6 +1253,8 @@ class Builder
         [$value, $operator] = $this->prepareValueAndOperator(
             $value, $operator, func_num_args() === 2
         );
+
+        $value = $this->flattenValue($value);
 
         if ($value instanceof DateTimeInterface) {
             $value = $value->format('Y-m-d');
@@ -1282,6 +1295,8 @@ class Builder
             $value, $operator, func_num_args() === 2
         );
 
+        $value = $this->flattenValue($value);
+
         if ($value instanceof DateTimeInterface) {
             $value = $value->format('H:i:s');
         }
@@ -1320,6 +1335,8 @@ class Builder
         [$value, $operator] = $this->prepareValueAndOperator(
             $value, $operator, func_num_args() === 2
         );
+
+        $value = $this->flattenValue($value);
 
         if ($value instanceof DateTimeInterface) {
             $value = $value->format('d');
@@ -1364,6 +1381,8 @@ class Builder
             $value, $operator, func_num_args() === 2
         );
 
+        $value = $this->flattenValue($value);
+
         if ($value instanceof DateTimeInterface) {
             $value = $value->format('m');
         }
@@ -1406,6 +1425,8 @@ class Builder
         [$value, $operator] = $this->prepareValueAndOperator(
             $value, $operator, func_num_args() === 2
         );
+
+        $value = $this->flattenValue($value);
 
         if ($value instanceof DateTimeInterface) {
             $value = $value->format('Y');
@@ -1715,7 +1736,7 @@ class Builder
         $this->wheres[] = compact('type', 'column', 'operator', 'value', 'boolean');
 
         if (! $value instanceof Expression) {
-            $this->addBinding($value);
+            $this->addBinding((int) $this->flattenValue($value));
         }
 
         return $this;
@@ -1801,6 +1822,39 @@ class Builder
     }
 
     /**
+     * Add a "where fulltext" clause to the query.
+     *
+     * @param  string|string[]  $columns
+     * @param  string  $value
+     * @param  string  $boolean
+     * @return $this
+     */
+    public function whereFullText($columns, $value, array $options = [], $boolean = 'and')
+    {
+        $type = 'Fulltext';
+
+        $columns = (array) $columns;
+
+        $this->wheres[] = compact('type', 'columns', 'value', 'options', 'boolean');
+
+        $this->addBinding($value);
+
+        return $this;
+    }
+
+    /**
+     * Add a "or where fulltext" clause to the query.
+     *
+     * @param  string|string[]  $columns
+     * @param  string  $value
+     * @return $this
+     */
+    public function orWhereFullText($columns, $value, array $options = [])
+    {
+        return $this->whereFulltext($columns, $value, $options, 'or');
+    }
+
+    /**
      * Add a "group by" clause to the query.
      *
      * @param  array|string  ...$groups
@@ -1864,7 +1918,7 @@ class Builder
         $this->havings[] = compact('type', 'column', 'operator', 'value', 'boolean');
 
         if (! $value instanceof Expression) {
-            $this->addBinding($value, 'having');
+            $this->addBinding($this->flattenValue($value), 'having');
         }
 
         return $this;
@@ -1902,7 +1956,7 @@ class Builder
 
         $this->havings[] = compact('type', 'column', 'values', 'boolean', 'not');
 
-        $this->addBinding($this->cleanBindings($values), 'having');
+        $this->addBinding(array_slice($this->cleanBindings(Arr::flatten($values)), 0, 2), 'having');
 
         return $this;
     }
@@ -1941,7 +1995,7 @@ class Builder
     /**
      * Add an "order by" clause to the query.
      *
-     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Query\Expression|string  $column
+     * @param  \Closure|\Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder|\Illuminate\Database\Query\Expression|string  $column
      * @param  string  $direction
      * @return $this
      *
@@ -1974,7 +2028,7 @@ class Builder
     /**
      * Add a descending "order by" clause to the query.
      *
-     * @param  string  $column
+     * @param  \Closure|\Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder|\Illuminate\Database\Query\Expression|string  $column
      * @return $this
      */
     public function orderByDesc($column)
@@ -1985,7 +2039,7 @@ class Builder
     /**
      * Add an "order by" clause for a timestamp to the query.
      *
-     * @param  string  $column
+     * @param  \Closure|\Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder|\Illuminate\Database\Query\Expression|string  $column
      * @return $this
      */
     public function latest($column = 'created_at')
@@ -1996,7 +2050,7 @@ class Builder
     /**
      * Add an "order by" clause for a timestamp to the query.
      *
-     * @param  string  $column
+     * @param  \Closure|\Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder|\Illuminate\Database\Query\Expression|string  $column
      * @return $this
      */
     public function oldest($column = 'created_at')
@@ -2054,7 +2108,7 @@ class Builder
     {
         $property = $this->unions ? 'unionOffset' : 'offset';
 
-        $this->$property = max(0, $value);
+        $this->$property = max(0, (int) $value);
 
         return $this;
     }
@@ -2081,7 +2135,7 @@ class Builder
         $property = $this->unions ? 'unionLimit' : 'limit';
 
         if ($value >= 0) {
-            $this->$property = $value;
+            $this->$property = ! is_null($value) ? (int) $value : null;
         }
 
         return $this;
@@ -2142,7 +2196,7 @@ class Builder
     /**
      * Remove all existing orders and optionally add a new order.
      *
-     * @param  string|null  $column
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Query\Expression|string|null  $column
      * @param  string  $direction
      * @return $this
      */
@@ -2244,12 +2298,41 @@ class Builder
     }
 
     /**
+     * Register a closure to be invoked before the query is executed.
+     *
+     * @param  callable  $callback
+     * @return $this
+     */
+    public function beforeQuery(callable $callback)
+    {
+        $this->beforeQueryCallbacks[] = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Invoke the "before query" modification callbacks.
+     *
+     * @return void
+     */
+    public function applyBeforeQueryCallbacks()
+    {
+        foreach ($this->beforeQueryCallbacks as $callback) {
+            $callback($this);
+        }
+
+        $this->beforeQueryCallbacks = [];
+    }
+
+    /**
      * Get the SQL representation of the query.
      *
      * @return string
      */
     public function toSql()
     {
+        $this->applyBeforeQueryCallbacks();
+
         return $this->grammar->compileSelect($this);
     }
 
@@ -2347,6 +2430,43 @@ class Builder
             'path' => Paginator::resolveCurrentPath(),
             'pageName' => $pageName,
         ]);
+    }
+
+    /**
+     * Get a paginator only supporting simple next and previous links.
+     *
+     * This is more efficient on larger data-sets, etc.
+     *
+     * @param  int|null  $perPage
+     * @param  array  $columns
+     * @param  string  $cursorName
+     * @param  \Illuminate\Pagination\Cursor|string|null  $cursor
+     * @return \Illuminate\Contracts\Pagination\CursorPaginator
+     */
+    public function cursorPaginate($perPage = 15, $columns = ['*'], $cursorName = 'cursor', $cursor = null)
+    {
+        return $this->paginateUsingCursor($perPage, $columns, $cursorName, $cursor);
+    }
+
+    /**
+     * Ensure the proper order by required for cursor pagination.
+     *
+     * @param  bool  $shouldReverse
+     * @return \Illuminate\Support\Collection
+     */
+    protected function ensureOrderForCursorPagination($shouldReverse = false)
+    {
+        $this->enforceOrderBy();
+
+        if ($shouldReverse) {
+            $this->orders = collect($this->orders)->map(function ($order) {
+                $order['direction'] = $order['direction'] === 'asc' ? 'desc' : 'asc';
+
+                return $order;
+            })->toArray();
+        }
+
+        return collect($this->orders);
     }
 
     /**
@@ -2459,7 +2579,7 @@ class Builder
     }
 
     /**
-     * Get an array with the values of a given column.
+     * Get a collection instance containing the values of a given column.
      *
      * @param  string  $column
      * @param  string|null  $key
@@ -2581,6 +2701,8 @@ class Builder
      */
     public function exists()
     {
+        $this->applyBeforeQueryCallbacks();
+
         $results = $this->connection->select(
             $this->grammar->compileExists($this), $this->getBindings(), ! $this->useWritePdo
         );
@@ -2706,8 +2828,8 @@ class Builder
      */
     public function aggregate($function, $columns = ['*'])
     {
-        $results = $this->cloneWithout($this->unions ? [] : ['columns'])
-                        ->cloneWithoutBindings($this->unions ? [] : ['select'])
+        $results = $this->cloneWithout($this->unions || $this->havings ? [] : ['columns'])
+                        ->cloneWithoutBindings($this->unions || $this->havings ? [] : ['select'])
                         ->setAggregate($function, $columns)
                         ->get($columns);
 
@@ -2819,6 +2941,8 @@ class Builder
             }
         }
 
+        $this->applyBeforeQueryCallbacks();
+
         // Finally, we will run this query against the database connection and return
         // the results. We will need to also flatten these bindings before running
         // the query so they are all in one huge, flattened array for execution.
@@ -2849,6 +2973,8 @@ class Builder
             }
         }
 
+        $this->applyBeforeQueryCallbacks();
+
         return $this->connection->affectingStatement(
             $this->grammar->compileInsertOrIgnore($this, $values),
             $this->cleanBindings(Arr::flatten($values, 1))
@@ -2864,6 +2990,8 @@ class Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
+        $this->applyBeforeQueryCallbacks();
+
         $sql = $this->grammar->compileInsertGetId($this, $values, $sequence);
 
         $values = $this->cleanBindings($values);
@@ -2880,6 +3008,8 @@ class Builder
      */
     public function insertUsing(array $columns, $query)
     {
+        $this->applyBeforeQueryCallbacks();
+
         [$sql, $bindings] = $this->createSub($query);
 
         return $this->connection->affectingStatement(
@@ -2896,10 +3026,33 @@ class Builder
      */
     public function update(array $values)
     {
+        $this->applyBeforeQueryCallbacks();
+
         $sql = $this->grammar->compileUpdate($this, $values);
 
         return $this->connection->update($sql, $this->cleanBindings(
             $this->grammar->prepareBindingsForUpdate($this->bindings, $values)
+        ));
+    }
+
+    /**
+     * Update records in a PostgreSQL database using the update from syntax.
+     *
+     * @param  array  $values
+     * @return int
+     */
+    public function updateFrom(array $values)
+    {
+        if (! method_exists($this->grammar, 'compileUpdateFrom')) {
+            throw new LogicException('This database engine does not support the updateFrom method.');
+        }
+
+        $this->applyBeforeQueryCallbacks();
+
+        $sql = $this->grammar->compileUpdateFrom($this, $values);
+
+        return $this->connection->update($sql, $this->cleanBindings(
+            $this->grammar->prepareBindingsForUpdateFrom($this->bindings, $values)
         ));
     }
 
@@ -2952,6 +3105,8 @@ class Builder
         if (is_null($update)) {
             $update = array_keys(reset($values));
         }
+
+        $this->applyBeforeQueryCallbacks();
 
         $bindings = $this->cleanBindings(array_merge(
             Arr::flatten($values, 1),
@@ -3027,6 +3182,8 @@ class Builder
             $this->where($this->from.'.id', '=', $id);
         }
 
+        $this->applyBeforeQueryCallbacks();
+
         return $this->connection->delete(
             $this->grammar->compileDelete($this), $this->cleanBindings(
                 $this->grammar->prepareBindingsForDelete($this->bindings)
@@ -3041,6 +3198,8 @@ class Builder
      */
     public function truncate()
     {
+        $this->applyBeforeQueryCallbacks();
+
         foreach ($this->grammar->compileTruncate($this) as $sql => $bindings) {
             $this->connection->statement($sql, $bindings);
         }
@@ -3133,12 +3292,30 @@ class Builder
         }
 
         if (is_array($value)) {
-            $this->bindings[$type] = array_values(array_merge($this->bindings[$type], $value));
+            $this->bindings[$type] = array_values(array_map(
+                [$this, 'castBinding'],
+                array_merge($this->bindings[$type], $value),
+            ));
         } else {
-            $this->bindings[$type][] = $value;
+            $this->bindings[$type][] = $this->castBinding($value);
         }
 
         return $this;
+    }
+
+    /**
+     * Cast the given binding value.
+     *
+     * @param  mixed  $value
+     * @return mixed
+     */
+    public function castBinding($value)
+    {
+        if (function_exists('enum_exists') && $value instanceof BackedEnum) {
+            return $value->value;
+        }
+
+        return $value;
     }
 
     /**
@@ -3162,9 +3339,24 @@ class Builder
      */
     public function cleanBindings(array $bindings)
     {
-        return array_values(array_filter($bindings, function ($binding) {
-            return ! $binding instanceof Expression;
-        }));
+        return collect($bindings)
+                    ->reject(function ($binding) {
+                        return $binding instanceof Expression;
+                    })
+                    ->map([$this, 'castBinding'])
+                    ->values()
+                    ->all();
+    }
+
+    /**
+     * Get a scalar type value from an unknown type of input.
+     *
+     * @param  mixed  $value
+     * @return mixed
+     */
+    protected function flattenValue($value)
+    {
+        return is_array($value) ? head(Arr::flatten($value)) : $value;
     }
 
     /**
@@ -3288,7 +3480,7 @@ class Builder
     /**
      * Die and dump the current SQL and bindings.
      *
-     * @return void
+     * @return never
      */
     public function dd()
     {
